@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width,initial-scale=1">
+	<title>Horizon & Distance Calculators</title>
+	<link rel="stylesheet" href="reset.css">
+	<style>
+		:root{
+			--bg:#f8fafc;
+			--card:#ffffff;
+			--text:#0f172a;
+			--muted:#475569;
+			--accent:#111827;
+			--radius:18px;
+		}
+		html,body{height:100%}
+		body{
+			margin:0;
+			font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+			background:var(--bg);
+			color:var(--text);
+			display:flex;
+			align-items:center;
+			justify-content:center;
+			padding:24px;
+		}
+		.card{
+			width:min(760px,100%);
+			background:var(--card);
+			border:1px solid rgba(15,23,42,0.06);
+			border-radius:var(--radius);
+			padding:24px;
+			box-shadow:0 24px 48px rgba(15,23,42,0.06);
+			box-sizing:border-box;
+		}
+		.lead{font-size:14px;color:var(--muted);margin-bottom:18px}
+		.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:18px}
+		.field{display:flex;flex-direction:column}
+		label{font-size:13px;color:var(--muted);margin-bottom:6px}
+		input[type="number"], select{padding:10px 12px;border-radius:10px;border:1px solid rgba(15,23,42,0.06);background:#fff;font-size:16px;color:var(--text);outline:none}
+		.small{font-size:13px}
+		.results{margin-top:12px;padding:12px;background:#f8fafc;border-radius:10px;border:1px dashed rgba(15,23,42,0.03)}
+		.row{margin:6px 0;font-size:14px;color:var(--text)}
+		.h2{font-weight:600;margin:12px 0;font-size:15px}
+		.controls{display:flex;gap:8px;align-items:center}
+		.button{padding:10px 14px;border-radius:10px;background:var(--accent);color:white;border:none;cursor:pointer;font-size:14px}
+		.note{font-size:12px;color:var(--muted);margin-top:8px}
+		@media (max-width:620px){.grid{grid-template-columns:1fr}}
+	</style>
+</head>
+<body>
+	<main class="card" role="main" aria-labelledby="title">
+		<div id="title" class="lead">Horizon line-of-sight and distance converters</div>
+
+		<section aria-labelledby="los-title">
+			<div id="los-title" class="h2">Line-of-sight to horizon</div>
+			<div class="grid">
+				<div class="field">
+					<label for="observerHeightFt">Observer height (ft)</label>
+					<input id="observerHeightFt" type="number" min="0" step="0.1" value="6">
+					<div class="small note">Enter height above surface in feet.</div>
+				</div>
+				<div class="field">
+					<label for="targetHeightFt">Target height (ft)</label>
+					<input id="targetHeightFt" type="number" min="0" step="0.1" value="0">
+					<div class="small note">Enter distant object's height in feet.</div>
+				</div>
+			</div>
+
+			<div class="results" aria-live="polite">
+				<div class="h2">Results — Imperial (ft / mi)</div>
+				<div id="resultsImperial" class="row">—</div>
+
+				<div class="h2">Results — Metric (m / km)</div>
+				<div id="resultsMetric" class="row">—</div>
+			</div>
+		</section>
+
+		<hr style="border:none;border-top:1px solid rgba(15,23,42,0.04);margin:18px 0;border-radius:1px">
+
+		<section aria-labelledby="conv-title">
+			<div id="conv-title" class="h2">Imperial → Metric distance</div>
+			<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+				<input id="convValue" type="number" placeholder="Value" step="any" style="flex:1;padding:10px;border-radius:10px;border:1px solid rgba(15,23,42,0.06)" value="1">
+				<select id="convUnit" style="padding:10px;border-radius:10px;border:1px solid rgba(15,23,42,0.06)">
+					<option value="in">in (inch)</option>
+					<option value="ft" selected>ft (foot)</option>
+					<option value="yd">yd (yard)</option>
+					<option value="mi">mi (mile)</option>
+				</select>
+				<button id="convClear" class="button" style="background:#6b7280">Clear</button>
+			</div>
+			<div id="convResults" class="results small">—</div>
+		</section>
+
+		<div class="note">All calculations assume a spherical Earth (R = 6,371 km). Distances are geometric approximations.</div>
+	</main>
+
+	<script>
+	(function(){
+		// Elements
+		const obsEl = document.getElementById('observerHeightFt');
+		const tgtEl = document.getElementById('targetHeightFt');
+		const resImp = document.getElementById('resultsImperial');
+		const resMet = document.getElementById('resultsMetric');
+
+		const convValue = document.getElementById('convValue');
+		const convUnit  = document.getElementById('convUnit');
+		const convResults = document.getElementById('convResults');
+		const convClear = document.getElementById('convClear');
+
+		// Earth radius (meters)
+		const R = 6371000;
+
+		function clampedNumber(v){ return Number.isFinite(v) ? v : 0; }
+
+		function horizonArcMeters(h_m){
+			if (h_m <= 0) return 0;
+			// arc distance along sphere: s = R * arccos(R / (R + h))
+			const theta = Math.acos(R / (R + h_m));
+			return R * theta;
+		}
+
+		function fmt(n, digits){
+			if (!Number.isFinite(n)) return '—';
+			return Number(n).toFixed(digits);
+		}
+
+		function updateLOS(){
+			const h1_ft = Math.max(0, parseFloat(obsEl.value) || 0);
+			const h2_ft = Math.max(0, parseFloat(tgtEl.value) || 0);
+
+			const h1_m = h1_ft * 0.3048;
+			const h2_m = h2_ft * 0.3048;
+
+			const d1_m = horizonArcMeters(h1_m);
+			const d2_m = horizonArcMeters(h2_m);
+			const total_m = d1_m + d2_m;
+
+			const d1_ft = d1_m * 3.280839895;
+			const d2_ft = d2_m * 3.280839895;
+			const total_ft = total_m * 3.280839895;
+
+			const d1_mi = d1_m / 1609.344;
+			const d2_mi = d2_m / 1609.344;
+			const total_mi = total_m / 1609.344;
+
+			resImp.innerHTML = ''
+				+ '<div class="row"><strong>Observer height:</strong> ' + fmt(h1_ft,2) + ' ft</div>'
+				+ '<div class="row"><strong>Target height:</strong> ' + fmt(h2_ft,2) + ' ft</div>'
+				+ '<div class="row"><strong>Observer horizon:</strong> ' + fmt(d1_ft,0) + ' ft (' + fmt(d1_mi,2) + ' mi)</div>'
+				+ '<div class="row"><strong>Target horizon:</strong> ' + fmt(d2_ft,0) + ' ft (' + fmt(d2_mi,2) + ' mi)</div>'
+				+ '<div class="row"><strong>Max line-of-sight:</strong> ' + fmt(total_ft,0) + ' ft (' + fmt(total_mi,2) + ' mi)</div>';
+
+			resMet.innerHTML = ''
+				+ '<div class="row"><strong>Observer height:</strong> ' + fmt(h1_m,2) + ' m</div>'
+				+ '<div class="row"><strong>Target height:</strong> ' + fmt(h2_m,2) + ' m</div>'
+				+ '<div class="row"><strong>Observer horizon:</strong> ' + fmt(d1_m,0) + ' m (' + fmt(d1_m/1000,3) + ' km)</div>'
+				+ '<div class="row"><strong>Target horizon:</strong> ' + fmt(d2_m,0) + ' m (' + fmt(d2_m/1000,3) + ' km)</div>'
+				+ '<div class="row"><strong>Max line-of-sight:</strong> ' + fmt(total_m,0) + ' m (' + fmt(total_m/1000,3) + ' km)</div>';
+		}
+
+		// Imperial -> Metric conversion
+		const factors = { in:0.0254, ft:0.3048, yd:0.9144, mi:1609.344 };
+
+		function updateConverter(){
+			const v = parseFloat(convValue.value);
+			if (!Number.isFinite(v)){
+				convResults.innerHTML = '—';
+				return;
+			}
+			const unit = convUnit.value;
+			const m = v * (factors[unit] || 1);
+			const km = m / 1000;
+			convResults.innerHTML = '<div class="row"><strong>' + fmt(m,4) + ' m</strong></div>'
+														+ '<div class="row"><strong>' + fmt(km,6) + ' km</strong></div>';
+		}
+
+		// Clear converter
+		convClear.addEventListener('click', function(){
+			convValue.value = '';
+			convResults.innerHTML = '—';
+			convValue.focus();
+		});
+
+		// Events
+		obsEl.addEventListener('input', updateLOS);
+		tgtEl.addEventListener('input', updateLOS);
+		convValue.addEventListener('input', updateConverter);
+		convUnit.addEventListener('change', updateConverter);
+
+		// initial update
+		updateLOS();
+		updateConverter();
+
+	})();
+	</script>
+</body>
+</html>
