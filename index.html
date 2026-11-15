@@ -46,7 +46,11 @@
 		.controls{display:flex;gap:8px;align-items:center}
 		.button{padding:10px 14px;border-radius:10px;background:var(--accent);color:white;border:none;cursor:pointer;font-size:14px}
 		.note{font-size:12px;color:var(--muted);margin-top:8px}
-		@media (max-width:620px){.grid{grid-template-columns:1fr}}
+		.converter-row{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:nowrap}
+		.converter-row > *{flex:1;min-width:0}
+		.converter-row .equals{flex:0 0 auto;font-size:18px;color:var(--muted);padding:0 4px}
+		.converter-row .button{flex:0 0 auto}
+		@media (max-width:620px){.grid{grid-template-columns:1fr}.converter-row{flex-wrap:wrap}.converter-row > *{flex:1 1 100%}.converter-row .button{flex:0 0 auto}}
 	</style>
 </head>
 <body>
@@ -66,6 +70,18 @@
 					<input id="targetHeightFt" type="number" min="0" step="0.1" value="0">
 					<div class="small note">Enter distant object's height in feet.</div>
 				</div>
+				<div class="field">
+					<label for="freqValue">Signal frequency</label>
+					<input id="freqValue" type="number" min="0" step="any" value="2400">
+					<div class="small note">Used for Fresnel zone calculations.</div>
+				</div>
+				<div class="field">
+					<label for="freqUnit">Frequency unit</label>
+					<select id="freqUnit">
+						<option value="MHz" selected>MHz</option>
+						<option value="GHz">GHz</option>
+					</select>
+				</div>
 			</div>
 
 			<div class="results" aria-live="polite">
@@ -80,21 +96,36 @@
 		<hr style="border:none;border-top:1px solid rgba(15,23,42,0.04);margin:18px 0;border-radius:1px">
 
 		<section aria-labelledby="conv-title">
-			<div id="conv-title" class="h2">Imperial → Metric distance</div>
-			<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
-				<input id="convValue" type="number" placeholder="Value" step="any" style="flex:1;padding:10px;border-radius:10px;border:1px solid rgba(15,23,42,0.06)" value="1">
-				<select id="convUnit" style="padding:10px;border-radius:10px;border:1px solid rgba(15,23,42,0.06)">
-					<option value="in">in (inch)</option>
-					<option value="ft" selected>ft (foot)</option>
-					<option value="yd">yd (yard)</option>
-					<option value="mi">mi (mile)</option>
+			<div id="conv-title" class="h2">Distance conversion</div>
+			<div class="converter-row">
+				<input id="convValue" type="number" placeholder="Value" step="any" value="1" style="padding:10px;border-radius:10px;border:1px solid rgba(15,23,42,0.06)">
+				<select id="convFromUnit" style="padding:10px;border-radius:10px;border:1px solid rgba(15,23,42,0.06)">
+					<option value="in">in</option>
+					<option value="ft" selected>ft</option>
+					<option value="yd">yd</option>
+					<option value="mi">mi</option>
+					<option value="mm">mm</option>
+					<option value="cm">cm</option>
+					<option value="m">m</option>
+					<option value="km">km</option>
+				</select>
+				<div class="equals">=</div>
+				<select id="convToUnit" style="padding:10px;border-radius:10px;border:1px solid rgba(15,23,42,0.06)">
+					<option value="in">in</option>
+					<option value="ft">ft</option>
+					<option value="yd">yd</option>
+					<option value="mi">mi</option>
+					<option value="mm">mm</option>
+					<option value="cm">cm</option>
+					<option value="m" selected>m</option>
+					<option value="km">km</option>
 				</select>
 				<button id="convClear" class="button" style="background:#6b7280">Clear</button>
 			</div>
 			<div id="convResults" class="results small">—</div>
 		</section>
 
-		<div class="note">All calculations assume a spherical Earth (R = 6,371 km). Distances are geometric approximations.</div>
+		<div class="note">All calculations assume a spherical Earth (R = 6,371 km). Distances are geometric approximations. Fresnel zone radius is computed at the path midpoint for the 1st zone (r₁ = √(λD/4)); 60% of r₁ is the minimum recommended obstacle clearance for reliable radio links.</div>
 	</main>
 
 	<script>
@@ -102,16 +133,21 @@
 		// Elements
 		const obsEl = document.getElementById('observerHeightFt');
 		const tgtEl = document.getElementById('targetHeightFt');
+		const freqEl = document.getElementById('freqValue');
+		const freqUnitEl = document.getElementById('freqUnit');
 		const resImp = document.getElementById('resultsImperial');
 		const resMet = document.getElementById('resultsMetric');
 
 		const convValue = document.getElementById('convValue');
-		const convUnit  = document.getElementById('convUnit');
+		const convFromUnit = document.getElementById('convFromUnit');
+		const convToUnit = document.getElementById('convToUnit');
 		const convResults = document.getElementById('convResults');
 		const convClear = document.getElementById('convClear');
 
 		// Earth radius (meters)
 		const R = 6371000;
+		// Speed of light (m/s)
+		const C = 299792458;
 
 		function clampedNumber(v){ return Number.isFinite(v) ? v : 0; }
 
@@ -146,23 +182,50 @@
 			const d2_mi = d2_m / 1609.344;
 			const total_mi = total_m / 1609.344;
 
+			// Fresnel zone 1 at path midpoint: r1 = sqrt(λ·D/4)
+			const freqRaw = parseFloat(freqEl.value) || 0;
+			const freqMult = freqUnitEl.value === 'GHz' ? 1e9 : 1e6;
+			const freq_hz = freqRaw * freqMult;
+			const lambda_m = freq_hz > 0 ? C / freq_hz : 0;
+			const r1_m = (lambda_m > 0 && total_m > 0) ? Math.sqrt(lambda_m * total_m / 4) : 0;
+			const r1_60_m = r1_m * 0.6;
+			const r1_ft = r1_m * 3.280839895;
+			const r1_60_ft = r1_60_m * 3.280839895;
+
+			const fresnelImp = freq_hz > 0 && total_m > 0
+				? '<div class="h2" style="margin-top:10px">Fresnel Zone — 1st zone, midpoint</div>'
+					+ '<div class="row"><strong>Wavelength:</strong> ' + fmt(lambda_m * 100, 2) + ' cm (' + fmt(lambda_m * 1000, 1) + ' mm)</div>'
+					+ '<div class="row"><strong>1st Fresnel radius:</strong> ' + fmt(r1_ft, 1) + ' ft (' + fmt(r1_ft / 5280, 3) + ' mi)</div>'
+					+ '<div class="row"><strong>60% clearance (min recommended):</strong> ' + fmt(r1_60_ft, 1) + ' ft</div>'
+				: '';
+
+			const fresnelMet = freq_hz > 0 && total_m > 0
+				? '<div class="h2" style="margin-top:10px">Fresnel Zone — 1st zone, midpoint</div>'
+					+ '<div class="row"><strong>Wavelength:</strong> ' + fmt(lambda_m * 100, 2) + ' cm (' + fmt(lambda_m * 1000, 1) + ' mm)</div>'
+					+ '<div class="row"><strong>1st Fresnel radius:</strong> ' + fmt(r1_m, 2) + ' m</div>'
+					+ '<div class="row"><strong>60% clearance (min recommended):</strong> ' + fmt(r1_60_m, 2) + ' m</div>'
+				: '';
+
 			resImp.innerHTML = ''
 				+ '<div class="row"><strong>Observer height:</strong> ' + fmt(h1_ft,2) + ' ft</div>'
 				+ '<div class="row"><strong>Target height:</strong> ' + fmt(h2_ft,2) + ' ft</div>'
 				+ '<div class="row"><strong>Observer horizon:</strong> ' + fmt(d1_ft,0) + ' ft (' + fmt(d1_mi,2) + ' mi)</div>'
 				+ '<div class="row"><strong>Target horizon:</strong> ' + fmt(d2_ft,0) + ' ft (' + fmt(d2_mi,2) + ' mi)</div>'
-				+ '<div class="row"><strong>Max line-of-sight:</strong> ' + fmt(total_ft,0) + ' ft (' + fmt(total_mi,2) + ' mi)</div>';
+				+ '<div class="row"><strong>Max line-of-sight:</strong> ' + fmt(total_ft,0) + ' ft (' + fmt(total_mi,2) + ' mi)</div>'
+				+ fresnelImp;
 
 			resMet.innerHTML = ''
 				+ '<div class="row"><strong>Observer height:</strong> ' + fmt(h1_m,2) + ' m</div>'
 				+ '<div class="row"><strong>Target height:</strong> ' + fmt(h2_m,2) + ' m</div>'
 				+ '<div class="row"><strong>Observer horizon:</strong> ' + fmt(d1_m,0) + ' m (' + fmt(d1_m/1000,3) + ' km)</div>'
 				+ '<div class="row"><strong>Target horizon:</strong> ' + fmt(d2_m,0) + ' m (' + fmt(d2_m/1000,3) + ' km)</div>'
-				+ '<div class="row"><strong>Max line-of-sight:</strong> ' + fmt(total_m,0) + ' m (' + fmt(total_m/1000,3) + ' km)</div>';
+				+ '<div class="row"><strong>Max line-of-sight:</strong> ' + fmt(total_m,0) + ' m (' + fmt(total_m/1000,3) + ' km)</div>'
+				+ fresnelMet;
 		}
 
-		// Imperial -> Metric conversion
-		const factors = { in:0.0254, ft:0.3048, yd:0.9144, mi:1609.344 };
+// Distance conversion: supports imperial <-> metric and any unit pair.
+		const factors = { in:0.0254, ft:0.3048, yd:0.9144, mi:1609.344, mm:0.001, cm:0.01, m:1, km:1000 };
+		const labels = { in:'in', ft:'ft', yd:'yd', mi:'mi', mm:'mm', cm:'cm', m:'m', km:'km' };
 
 		function updateConverter(){
 			const v = parseFloat(convValue.value);
@@ -170,11 +233,11 @@
 				convResults.innerHTML = '—';
 				return;
 			}
-			const unit = convUnit.value;
-			const m = v * (factors[unit] || 1);
-			const km = m / 1000;
-			convResults.innerHTML = '<div class="row"><strong>' + fmt(m,4) + ' m</strong></div>'
-														+ '<div class="row"><strong>' + fmt(km,6) + ' km</strong></div>';
+			const fromUnit = convFromUnit.value;
+			const toUnit = convToUnit.value;
+			const meters = v * (factors[fromUnit] || 1);
+			const converted = meters / (factors[toUnit] || 1);
+			convResults.innerHTML = '<div class="row"><strong>' + fmt(converted,4) + ' ' + labels[toUnit] + '</strong></div>';
 		}
 
 		// Clear converter
@@ -187,8 +250,13 @@
 		// Events
 		obsEl.addEventListener('input', updateLOS);
 		tgtEl.addEventListener('input', updateLOS);
+		freqEl.addEventListener('input', updateLOS);
+		freqUnitEl.addEventListener('change', updateLOS);
 		convValue.addEventListener('input', updateConverter);
-		convUnit.addEventListener('change', updateConverter);
+		convFromUnit.addEventListener('input', updateConverter);
+		convFromUnit.addEventListener('change', updateConverter);
+		convToUnit.addEventListener('input', updateConverter);
+		convToUnit.addEventListener('change', updateConverter);
 
 		// initial update
 		updateLOS();
