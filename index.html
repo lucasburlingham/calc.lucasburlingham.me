@@ -14,7 +14,7 @@
 			--accent:#111827;
 			--radius:18px;
 		}
-		html,body{height:100%}
+		html,body{min-height:100%}
 		body{
 			margin:0;
 			font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -51,6 +51,12 @@
 		.converter-row .equals{flex:0 0 auto;font-size:18px;color:var(--muted);padding:0 4px}
 		.converter-row .button{flex:0 0 auto}
 		@media (max-width:620px){.grid{grid-template-columns:1fr}.converter-row{flex-wrap:wrap}.converter-row > *{flex:1 1 100%}.converter-row .button{flex:0 0 auto}}
+		/* Globe visualizer */
+		#globeWrap{position:relative;margin-top:14px;display:none}
+		@media(min-width:760px){#globeWrap{display:block}}
+		#globeCanvas{display:block;width:100%;height:280px;border-radius:10px;cursor:default}
+		#globeTooltip{position:absolute;background:rgba(15,23,42,.9);color:#f1f5f9;font-size:12px;padding:7px 11px;border-radius:8px;pointer-events:none;display:none;z-index:10;white-space:nowrap;line-height:1.65;box-shadow:0 4px 16px rgba(0,0,0,.25)}
+		.globe-note{margin:4px 0 0;font-size:11px;color:var(--muted);text-align:right}
 	</style>
 </head>
 <body>
@@ -61,18 +67,44 @@
 			<div id="los-title" class="h2">Line-of-sight to horizon</div>
 			<div class="grid">
 				<div class="field">
-					<label for="observerHeightFt">Observer height (ft)</label>
+					<label for="observerHeightFt">Observer height</label>
 					<input id="observerHeightFt" type="number" min="0" step="0.1" value="6">
-					<div class="small note">Enter height above surface in feet.</div>
+					<div class="small note">Height above the surface.</div>
 				</div>
 				<div class="field">
-					<label for="targetHeightFt">Target height (ft)</label>
+					<label for="observerHeightUnit">Observer height unit</label>
+					<select id="observerHeightUnit">
+						<option value="ft" selected>ft</option>
+						<option value="m">m</option>
+					</select>
+				</div>
+				<div class="field">
+					<label for="targetHeightFt">Target height</label>
 					<input id="targetHeightFt" type="number" min="0" step="0.1" value="0">
-					<div class="small note">Enter distant object's height in feet.</div>
+					<div class="small note">Distant object's height.</div>
+				</div>
+				<div class="field">
+					<label for="targetHeightUnit">Target height unit</label>
+					<select id="targetHeightUnit">
+						<option value="ft" selected>ft</option>
+						<option value="m">m</option>
+					</select>
+				</div>
+				<div class="field">
+					<label for="pathDistance">Observer-target distance (optional)</label>
+					<input id="pathDistance" type="number" min="0" step="any" placeholder="Leave blank for max line-of-sight">
+					<div class="small note">Used for Fresnel and globe path when provided.</div>
+				</div>
+				<div class="field">
+					<label for="pathDistanceUnit">Distance unit</label>
+					<select id="pathDistanceUnit">
+						<option value="mi" selected>mi</option>
+						<option value="km">km</option>
+					</select>
 				</div>
 				<div class="field">
 					<label for="freqValue">Signal frequency</label>
-					<input id="freqValue" type="number" min="0" step="any" value="2400">
+					<input id="freqValue" type="number" min="0" step="any" value="910">
 					<div class="small note">Used for Fresnel zone calculations.</div>
 				</div>
 				<div class="field">
@@ -90,6 +122,11 @@
 
 				<div class="h2">Results — Metric (m / km)</div>
 				<div id="resultsMetric" class="row">—</div>
+			</div>
+			<div id="globeWrap">
+				<canvas id="globeCanvas" aria-label="To-scale globe cross-section for the line-of-sight path"></canvas>
+				<div id="globeTooltip" role="tooltip"></div>
+				<p class="globe-note">To-scale cross-section — hover lines for details</p>
 			</div>
 		</section>
 
@@ -125,14 +162,18 @@
 			<div id="convResults" class="results small">—</div>
 		</section>
 
-		<div class="note">All calculations assume a spherical Earth (R = 6,371 km). Distances are geometric approximations. Fresnel zone radius is computed at the path midpoint for the 1st zone (r₁ = √(λD/4)); 60% of r₁ is the minimum recommended obstacle clearance for reliable radio links.</div>
+		<div class="note">All calculations assume a spherical Earth (R = 6,371 km). Distances are geometric approximations. Fresnel zone radius is computed at the path midpoint for the 1st zone (r₁ = √(λD/4)); D uses the optional observer-target distance when provided, otherwise max geometric line-of-sight. 60% of r₁ is the minimum recommended obstacle clearance for reliable radio links.</div>
 	</main>
 
 	<script>
 	(function(){
 		// Elements
 		const obsEl = document.getElementById('observerHeightFt');
+		const obsUnitEl = document.getElementById('observerHeightUnit');
 		const tgtEl = document.getElementById('targetHeightFt');
+		const tgtUnitEl = document.getElementById('targetHeightUnit');
+		const pathDistEl = document.getElementById('pathDistance');
+		const pathDistUnitEl = document.getElementById('pathDistanceUnit');
 		const freqEl = document.getElementById('freqValue');
 		const freqUnitEl = document.getElementById('freqUnit');
 		const resImp = document.getElementById('resultsImperial');
@@ -164,44 +205,69 @@
 		}
 
 		function updateLOS(){
-			const h1_ft = Math.max(0, parseFloat(obsEl.value) || 0);
-			const h2_ft = Math.max(0, parseFloat(tgtEl.value) || 0);
+			const h1_in = Math.max(0, parseFloat(obsEl.value) || 0);
+			const h2_in = Math.max(0, parseFloat(tgtEl.value) || 0);
+			const obsUnit = obsUnitEl.value;
+			const tgtUnit = tgtUnitEl.value;
 
-			const h1_m = h1_ft * 0.3048;
-			const h2_m = h2_ft * 0.3048;
+			const h1_m = obsUnit === 'm' ? h1_in : h1_in * 0.3048;
+			const h2_m = tgtUnit === 'm' ? h2_in : h2_in * 0.3048;
+			const h1_ft = h1_m * 3.280839895;
+			const h2_ft = h2_m * 3.280839895;
 
 			const d1_m = horizonArcMeters(h1_m);
 			const d2_m = horizonArcMeters(h2_m);
-			const total_m = d1_m + d2_m;
+			const maxLos_m = d1_m + d2_m;
 
 			const d1_ft = d1_m * 3.280839895;
 			const d2_ft = d2_m * 3.280839895;
-			const total_ft = total_m * 3.280839895;
+			const maxLos_ft = maxLos_m * 3.280839895;
 
 			const d1_mi = d1_m / 1609.344;
 			const d2_mi = d2_m / 1609.344;
-			const total_mi = total_m / 1609.344;
+			const maxLos_mi = maxLos_m / 1609.344;
+
+			const pathRaw = pathDistEl.value.trim();
+			const pathVal = parseFloat(pathRaw);
+			const hasCustomPath = pathRaw !== '' && Number.isFinite(pathVal) && pathVal > 0;
+			const pathUnit = pathDistUnitEl.value;
+			const customPath_m = hasCustomPath ? pathVal * (pathUnit === 'km' ? 1000 : 1609.344) : 0;
+			const path_m = hasCustomPath ? customPath_m : maxLos_m;
+			const path_mi = path_m / 1609.344;
+			const path_km = path_m / 1000;
+			const withinLos = path_m <= maxLos_m + 1e-6;
 
 			// Fresnel zone 1 at path midpoint: r1 = sqrt(λ·D/4)
 			const freqRaw = parseFloat(freqEl.value) || 0;
 			const freqMult = freqUnitEl.value === 'GHz' ? 1e9 : 1e6;
 			const freq_hz = freqRaw * freqMult;
 			const lambda_m = freq_hz > 0 ? C / freq_hz : 0;
-			const r1_m = (lambda_m > 0 && total_m > 0) ? Math.sqrt(lambda_m * total_m / 4) : 0;
+			const r1_m = (lambda_m > 0 && path_m > 0) ? Math.sqrt(lambda_m * path_m / 4) : 0;
 			const r1_60_m = r1_m * 0.6;
 			const r1_ft = r1_m * 3.280839895;
 			const r1_60_ft = r1_60_m * 3.280839895;
 
-			const fresnelImp = freq_hz > 0 && total_m > 0
+			const customPathImp = hasCustomPath
+				? '<div class="row"><strong>Observer-target distance:</strong> ' + fmt(path_mi, 2) + ' mi</div>'
+					+ '<div class="row"><strong>Within max line-of-sight:</strong> ' + (withinLos ? 'Yes' : 'No') + '</div>'
+				: '<div class="row"><strong>Observer-target distance:</strong> Using max line-of-sight</div>';
+			const customPathMet = hasCustomPath
+				? '<div class="row"><strong>Observer-target distance:</strong> ' + fmt(path_km, 3) + ' km</div>'
+					+ '<div class="row"><strong>Within max line-of-sight:</strong> ' + (withinLos ? 'Yes' : 'No') + '</div>'
+				: '<div class="row"><strong>Observer-target distance:</strong> Using max line-of-sight</div>';
+
+			const fresnelImp = freq_hz > 0 && path_m > 0
 				? '<div class="h2" style="margin-top:10px">Fresnel Zone — 1st zone, midpoint</div>'
 					+ '<div class="row"><strong>Wavelength:</strong> ' + fmt(lambda_m * 100, 2) + ' cm (' + fmt(lambda_m * 1000, 1) + ' mm)</div>'
+					+ '<div class="row"><strong>Path used (D):</strong> ' + fmt(path_mi, 2) + ' mi</div>'
 					+ '<div class="row"><strong>1st Fresnel radius:</strong> ' + fmt(r1_ft, 1) + ' ft (' + fmt(r1_ft / 5280, 3) + ' mi)</div>'
 					+ '<div class="row"><strong>60% clearance (min recommended):</strong> ' + fmt(r1_60_ft, 1) + ' ft</div>'
 				: '';
 
-			const fresnelMet = freq_hz > 0 && total_m > 0
+			const fresnelMet = freq_hz > 0 && path_m > 0
 				? '<div class="h2" style="margin-top:10px">Fresnel Zone — 1st zone, midpoint</div>'
 					+ '<div class="row"><strong>Wavelength:</strong> ' + fmt(lambda_m * 100, 2) + ' cm (' + fmt(lambda_m * 1000, 1) + ' mm)</div>'
+					+ '<div class="row"><strong>Path used (D):</strong> ' + fmt(path_km, 3) + ' km</div>'
 					+ '<div class="row"><strong>1st Fresnel radius:</strong> ' + fmt(r1_m, 2) + ' m</div>'
 					+ '<div class="row"><strong>60% clearance (min recommended):</strong> ' + fmt(r1_60_m, 2) + ' m</div>'
 				: '';
@@ -211,7 +277,8 @@
 				+ '<div class="row"><strong>Target height:</strong> ' + fmt(h2_ft,2) + ' ft</div>'
 				+ '<div class="row"><strong>Observer horizon:</strong> ' + fmt(d1_ft,0) + ' ft (' + fmt(d1_mi,2) + ' mi)</div>'
 				+ '<div class="row"><strong>Target horizon:</strong> ' + fmt(d2_ft,0) + ' ft (' + fmt(d2_mi,2) + ' mi)</div>'
-				+ '<div class="row"><strong>Max line-of-sight:</strong> ' + fmt(total_ft,0) + ' ft (' + fmt(total_mi,2) + ' mi)</div>'
+				+ '<div class="row"><strong>Max line-of-sight:</strong> ' + fmt(maxLos_ft,0) + ' ft (' + fmt(maxLos_mi,2) + ' mi)</div>'
+				+ customPathImp
 				+ fresnelImp;
 
 			resMet.innerHTML = ''
@@ -219,8 +286,10 @@
 				+ '<div class="row"><strong>Target height:</strong> ' + fmt(h2_m,2) + ' m</div>'
 				+ '<div class="row"><strong>Observer horizon:</strong> ' + fmt(d1_m,0) + ' m (' + fmt(d1_m/1000,3) + ' km)</div>'
 				+ '<div class="row"><strong>Target horizon:</strong> ' + fmt(d2_m,0) + ' m (' + fmt(d2_m/1000,3) + ' km)</div>'
-				+ '<div class="row"><strong>Max line-of-sight:</strong> ' + fmt(total_m,0) + ' m (' + fmt(total_m/1000,3) + ' km)</div>'
+				+ '<div class="row"><strong>Max line-of-sight:</strong> ' + fmt(maxLos_m,0) + ' m (' + fmt(maxLos_m/1000,3) + ' km)</div>'
+				+ customPathMet
 				+ fresnelMet;
+			if(gCanvas) gDraw({ h1_m, h2_m, d1_m, d2_m, r1_m, lambda_m, path_m, maxLos_m, hasCustomPath });
 		}
 
 // Distance conversion: supports imperial <-> metric and any unit pair.
@@ -249,7 +318,11 @@
 
 		// Events
 		obsEl.addEventListener('input', updateLOS);
+		obsUnitEl.addEventListener('change', updateLOS);
 		tgtEl.addEventListener('input', updateLOS);
+		tgtUnitEl.addEventListener('change', updateLOS);
+		pathDistEl.addEventListener('input', updateLOS);
+		pathDistUnitEl.addEventListener('change', updateLOS);
 		freqEl.addEventListener('input', updateLOS);
 		freqUnitEl.addEventListener('change', updateLOS);
 		convValue.addEventListener('input', updateConverter);
@@ -257,6 +330,360 @@
 		convFromUnit.addEventListener('change', updateConverter);
 		convToUnit.addEventListener('input', updateConverter);
 		convToUnit.addEventListener('change', updateConverter);
+
+		// === Globe Visualizer (desktop) ===
+		const gCanvas = document.getElementById('globeCanvas');
+		const gTip = document.getElementById('globeTooltip');
+		let gHitAreas = [];
+		let gLastParams = null;
+
+		function gSetup(){
+			const dpr = window.devicePixelRatio || 1;
+			const rect = gCanvas.getBoundingClientRect();
+			const W = rect.width, H = rect.height;
+			if(!W || !H) return null;
+			if(gCanvas.width !== Math.round(W*dpr) || gCanvas.height !== Math.round(H*dpr)){
+				gCanvas.width = Math.round(W*dpr);
+				gCanvas.height = Math.round(H*dpr);
+			}
+			const ctx = gCanvas.getContext('2d');
+			ctx.setTransform(dpr,0,0,dpr,0,0);
+			return {ctx,W,H};
+		}
+		function gRR(ctx,x,y,w,h,r){
+			ctx.beginPath();
+			ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+			ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+			ctx.lineTo(x+r,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-r);
+			ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y);
+			ctx.closePath();
+		}
+		function gDraw(p){
+			if(!gCanvas) return;
+			gLastParams = p;
+			const s = gSetup();
+			if(!s) return;
+			const {ctx,W,H} = s;
+			const {h1_m,h2_m,d1_m,d2_m,r1_m,lambda_m,path_m,maxLos_m,hasCustomPath} = p;
+			const span_m = Math.max(0, path_m);
+			gHitAreas = [];
+			ctx.clearRect(0,0,W,H);
+
+			// Sky gradient
+			const sky = ctx.createLinearGradient(0,0,0,H);
+			sky.addColorStop(0,'#bfdbfe'); sky.addColorStop(1,'#eff6ff');
+			ctx.fillStyle = sky; ctx.fillRect(0,0,W,H);
+
+			const theta = Math.min(Math.PI * 0.95, span_m / R);
+			const halfTheta = theta / 2;
+
+			function worldPoint(phi, radius){
+				return {
+					x: radius * Math.sin(phi),
+					y: radius * Math.cos(phi) - R
+				};
+			}
+			function include(pt, bounds){
+				bounds.minX = Math.min(bounds.minX, pt.x);
+				bounds.maxX = Math.max(bounds.maxX, pt.x);
+				bounds.minY = Math.min(bounds.minY, pt.y);
+				bounds.maxY = Math.max(bounds.maxY, pt.y);
+			}
+
+			const obsSurface = worldPoint(-halfTheta, R);
+			const tgtSurface = worldPoint(halfTheta, R);
+			const obsTop = worldPoint(-halfTheta, R + h1_m);
+			const tgtTop = worldPoint(halfTheta, R + h2_m);
+
+			const earthWorld = [];
+			const arcSteps = Math.max(12, Math.min(180, Math.ceil(theta * 220)));
+			for(let i = 0; i <= arcSteps; i++){
+				const t = arcSteps ? i / arcSteps : 0;
+				const phi = -halfTheta + (theta * t);
+				earthWorld.push(worldPoint(phi, R));
+			}
+
+			const bounds = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
+			earthWorld.forEach(function(pt){ include(pt, bounds); });
+			include(obsTop, bounds);
+			include(tgtTop, bounds);
+
+			const losDxM = tgtTop.x - obsTop.x;
+			const losDyM = tgtTop.y - obsTop.y;
+			const losLenM = Math.hypot(losDxM, losDyM);
+			if(r1_m > 0 && losLenM > 0){
+				const cxM = (obsTop.x + tgtTop.x) / 2;
+				const cyM = (obsTop.y + tgtTop.y) / 2;
+				const ang = Math.atan2(losDyM, losDxM);
+				const a = losLenM / 2;
+				const b = r1_m;
+				const ex = Math.sqrt((a * Math.cos(ang)) ** 2 + (b * Math.sin(ang)) ** 2);
+				const ey = Math.sqrt((a * Math.sin(ang)) ** 2 + (b * Math.cos(ang)) ** 2);
+				include({x: cxM - ex, y: cyM - ey}, bounds);
+				include({x: cxM + ex, y: cyM + ey}, bounds);
+			}
+
+			const pad = 14;
+			if(!Number.isFinite(bounds.minX) || !Number.isFinite(bounds.maxX) || !Number.isFinite(bounds.minY) || !Number.isFinite(bounds.maxY)){
+				return;
+			}
+			const spanX = Math.max(1, bounds.maxX - bounds.minX);
+			const spanYBase = Math.max(1, bounds.maxY - bounds.minY);
+			const yPadMeters = Math.max(0.5, spanYBase * 0.08);
+			bounds.minY -= yPadMeters;
+			bounds.maxY += yPadMeters;
+			const spanY = Math.max(1, bounds.maxY - bounds.minY);
+			const scale = Math.min((W - pad * 2) / spanX, (H - pad * 2) / spanY);
+			const metersPerPixel = scale > 0 ? (1 / scale) : 0;
+
+			function toCanvas(pt){
+				return {
+					x: pad + (pt.x - bounds.minX) * scale,
+					y: H - pad - (pt.y - bounds.minY) * scale
+				};
+			}
+
+			const obsSurfaceC = toCanvas(obsSurface);
+			const tgtSurfaceC = toCanvas(tgtSurface);
+			const obsTopC = toCanvas(obsTop);
+			const tgtTopC = toCanvas(tgtTop);
+			const earthCanvas = earthWorld.map(toCanvas);
+
+			// 1. Earth body (to-scale curved cross-section)
+			ctx.save();
+			ctx.beginPath();
+			ctx.moveTo(earthCanvas[0].x, earthCanvas[0].y);
+			for(let i = 1; i < earthCanvas.length; i++){
+				ctx.lineTo(earthCanvas[i].x, earthCanvas[i].y);
+			}
+			ctx.lineTo(earthCanvas[earthCanvas.length - 1].x, H - pad);
+			ctx.lineTo(earthCanvas[0].x, H - pad);
+			ctx.closePath();
+			const eg = ctx.createLinearGradient(0, Math.min(obsSurfaceC.y, tgtSurfaceC.y), 0, H - pad);
+			eg.addColorStop(0,'#22c55e');
+			eg.addColorStop(1,'#15803d');
+			ctx.fillStyle = eg;
+			ctx.fill();
+			ctx.restore();
+
+			// Earth surface line
+			ctx.save();
+			ctx.beginPath();
+			ctx.moveTo(earthCanvas[0].x, earthCanvas[0].y);
+			for(let i = 1; i < earthCanvas.length; i++){
+				ctx.lineTo(earthCanvas[i].x, earthCanvas[i].y);
+			}
+			ctx.strokeStyle = '#14532d';
+			ctx.lineWidth = 2;
+			ctx.stroke();
+			ctx.restore();
+
+			// 2. Fresnel zone ellipse (to scale)
+			const losDxPx = tgtTopC.x - obsTopC.x;
+			const losDyPx = tgtTopC.y - obsTopC.y;
+			const losLenPx = Math.hypot(losDxPx, losDyPx);
+			const losAnglePx = Math.atan2(losDyPx, losDxPx);
+			const blockedByCurvature = span_m > maxLos_m + 1e-6;
+			const losColor = blockedByCurvature ? '#b91c1c' : '#1d4ed8';
+			if(r1_m > 0 && losLenM > 0 && losLenPx > 0){
+				const cpx = (obsTopC.x + tgtTopC.x) / 2;
+				const cpy = (obsTopC.y + tgtTopC.y) / 2;
+				const fresnelMinorPx = r1_m * scale;
+				ctx.save();
+				ctx.translate(cpx, cpy);
+				ctx.rotate(losAnglePx);
+				ctx.beginPath();
+				ctx.ellipse(0, 0, losLenPx / 2, fresnelMinorPx, 0, 0, Math.PI * 2);
+				ctx.fillStyle = 'rgba(251,146,60,0.12)';
+				ctx.fill();
+				ctx.strokeStyle = 'rgba(234,88,12,0.72)';
+				ctx.setLineDash([5,4]);
+				ctx.lineWidth = 1.5;
+				ctx.stroke();
+				ctx.setLineDash([]);
+				ctx.restore();
+				gHitAreas.push({
+					type:'ellipse',
+					cx:cpx,
+					cy:cpy,
+					angle:losAnglePx,
+					a:losLenPx / 2,
+					b:fresnelMinorPx,
+					label:'1st Fresnel Zone',
+					lines:[
+						'r\u2081 = ' + fmt(r1_m,2) + '\u202fm (' + fmt(r1_m * 3.28084,1) + '\u202fft)',
+						'60% clearance = ' + fmt(r1_m * 0.6,2) + '\u202fm (' + fmt(r1_m * 0.6 * 3.28084,1) + '\u202fft)',
+						'\u03bb = ' + fmt(lambda_m * 100,2) + '\u202fcm',
+						'Path = ' + fmt(span_m / 1000,2) + '\u202fkm'
+					]
+				});
+			}
+
+			// 3. LOS line
+			ctx.save();
+			ctx.beginPath();
+			ctx.moveTo(obsTopC.x, obsTopC.y);
+			ctx.lineTo(tgtTopC.x, tgtTopC.y);
+			ctx.strokeStyle = losColor;
+			ctx.lineWidth = 2;
+			ctx.stroke();
+			ctx.restore();
+			gHitAreas.push({
+				type:'segment',
+				x1:obsTopC.x, y1:obsTopC.y, x2:tgtTopC.x, y2:tgtTopC.y,
+				label:'Line of Sight',
+				lines:[
+					'Observer-target distance: ' + fmt(span_m / 1000,3) + '\u202fkm (' + fmt(span_m / 1609.344,2) + '\u202fmi)',
+					'Max LOS at heights: ' + fmt(maxLos_m / 1000,3) + '\u202fkm (' + fmt(maxLos_m / 1609.344,2) + '\u202fmi)',
+					'Status: ' + (blockedByCurvature ? 'Beyond LOS (blocked by curvature)' : 'Within LOS'),
+					'Observer \u2192 horizon: ' + fmt(d1_m / 1000,3) + '\u202fkm',
+					'Target \u2192 horizon: ' + fmt(d2_m / 1000,3) + '\u202fkm'
+				]
+			});
+
+			// 4. Observer height line
+			ctx.save();
+			ctx.beginPath();
+			ctx.moveTo(obsSurfaceC.x, obsSurfaceC.y);
+			ctx.lineTo(obsTopC.x, obsTopC.y);
+			ctx.strokeStyle = '#dc2626';
+			ctx.lineWidth = 2.5;
+			ctx.stroke();
+			ctx.restore();
+			gHitAreas.push({
+				type:'segment',
+				x1:obsSurfaceC.x, y1:obsSurfaceC.y, x2:obsTopC.x, y2:obsTopC.y,
+				label:'Observer Height',
+				lines:[
+					'Height: ' + fmt(h1_m,2) + '\u202fm (' + fmt(h1_m * 3.28084,2) + '\u202fft)',
+					'Horizon: ' + fmt(d1_m / 1000,3) + '\u202fkm (' + fmt(d1_m / 1609.344,2) + '\u202fmi)'
+				]
+			});
+
+			// 5. Target height line
+			ctx.save();
+			ctx.beginPath();
+			ctx.moveTo(tgtSurfaceC.x, tgtSurfaceC.y);
+			ctx.lineTo(tgtTopC.x, tgtTopC.y);
+			ctx.strokeStyle = '#16a34a';
+			ctx.lineWidth = 2.5;
+			ctx.stroke();
+			ctx.restore();
+			gHitAreas.push({
+				type:'segment',
+				x1:tgtSurfaceC.x, y1:tgtSurfaceC.y, x2:tgtTopC.x, y2:tgtTopC.y,
+				label:'Target Height',
+				lines:[
+					'Height: ' + fmt(h2_m,2) + '\u202fm (' + fmt(h2_m * 3.28084,2) + '\u202fft)',
+					'Horizon: ' + fmt(d2_m / 1000,3) + '\u202fkm (' + fmt(d2_m / 1609.344,2) + '\u202fmi)'
+				]
+			});
+
+			// 6. Surface dots and antenna-top dots
+			[[obsSurfaceC.x,obsSurfaceC.y,'#dc2626'],[tgtSurfaceC.x,tgtSurfaceC.y,'#16a34a']].forEach(function(d){
+				ctx.beginPath(); ctx.arc(d[0],d[1],5,0,Math.PI*2); ctx.fillStyle=d[2]; ctx.fill();
+			});
+			[[obsTopC.x,obsTopC.y,'#dc2626'],[tgtTopC.x,tgtTopC.y,'#16a34a']].forEach(function(d){
+				ctx.beginPath(); ctx.arc(d[0],d[1],3,0,Math.PI*2); ctx.fillStyle=d[2]; ctx.fill();
+			});
+
+			// 7. Earth surface hover area
+			gHitAreas.push({
+				type:'polyline',
+				points: earthCanvas,
+				label:"Earth\u2019s Surface",
+				lines:[
+					'Spherical model \u00b7 R\u202f=\u202f6,371\u202fkm',
+					'Rendered to scale (x/y locked)',
+					'Path source: ' + (hasCustomPath ? 'custom observer-target distance' : 'max line-of-sight'),
+					'1 px \u2248 ' + fmt(metersPerPixel,1) + '\u202fm'
+				]
+			});
+
+			// 8. Text labels below observer / target
+			ctx.font = '11px Inter, system-ui, sans-serif';
+			ctx.textAlign = 'center'; ctx.textBaseline = 'top'; ctx.fillStyle = '#374151';
+			ctx.fillText('Observer', obsSurfaceC.x, Math.min(H - 6, obsSurfaceC.y + 8));
+			ctx.fillText('Target', tgtSurfaceC.x, Math.min(H - 6, tgtSurfaceC.y + 8));
+			ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'left';
+
+			// 9. Legend panel
+			const litems = [
+				{color:losColor, label:blockedByCurvature ? 'Line of sight (blocked)' : 'Line of sight', dash:false, lw:2},
+				{color:'#dc2626', label:'Observer height', dash:false, lw:2.5},
+				{color:'#16a34a', label:'Target height', dash:false, lw:2.5},
+				{color:'#14532d', label:"Earth\u2019s surface", dash:false, lw:2}
+			];
+			if(r1_m > 0 && losLenM > 0) litems.push({color:'rgba(234,88,12,0.8)', label:'1st Fresnel zone', dash:true, lw:1.5});
+			const lh = litems.length * 18 + 10;
+			ctx.save(); ctx.fillStyle = 'rgba(255,255,255,0.78)'; gRR(ctx,8,8,148,lh,6); ctx.fill(); ctx.restore();
+			ctx.font = '11px Inter, system-ui, sans-serif'; ctx.textBaseline = 'middle';
+			let ly = 17;
+			litems.forEach(function(it){
+				ctx.save(); ctx.strokeStyle = it.color; ctx.lineWidth = it.lw;
+				if(it.dash) ctx.setLineDash([4,3]);
+				ctx.beginPath(); ctx.moveTo(14,ly); ctx.lineTo(36,ly); ctx.stroke();
+				ctx.setLineDash([]); ctx.fillStyle = '#1f2937'; ctx.fillText(it.label,42,ly);
+				ctx.restore(); ly += 18;
+			});
+			ctx.textBaseline = 'alphabetic';
+		}
+
+		// --- Hit testing helpers ---
+		function gPSD(px,py,x1,y1,x2,y2){
+			const dx=x2-x1, dy=y2-y1, l2=dx*dx+dy*dy;
+			if(!l2) return Math.hypot(px-x1,py-y1);
+			const t = Math.max(0,Math.min(1,((px-x1)*dx+(py-y1)*dy)/l2));
+			return Math.hypot(px-x1-t*dx, py-y1-t*dy);
+		}
+		function gNearEll(px,py,cx,cy,angle,a,b,th){
+			if(a <= 0 || b <= 0) return false;
+			const ca=Math.cos(-angle), sa=Math.sin(-angle);
+			const lx=(px-cx)*ca-(py-cy)*sa, ly=(px-cx)*sa+(py-cy)*ca;
+			const norm = Math.sqrt((lx/a)*(lx/a)+(ly/b)*(ly/b));
+			if(!Number.isFinite(norm)) return false;
+			return norm <= 1.06 || (Math.abs(norm - 1) * Math.max(a,b) < th);
+		}
+		function gHitTest(mx,my){
+			const T = 7;
+			for(let i = gHitAreas.length-1; i >= 0; i--){
+				const a = gHitAreas[i];
+				if(a.type==='segment' && gPSD(mx,my,a.x1,a.y1,a.x2,a.y2) < T) return a;
+				if(a.type==='ellipse' && gNearEll(mx,my,a.cx,a.cy,a.angle,a.a,Math.max(a.b,4),T*2)) return a;
+				if(a.type==='polyline' && Array.isArray(a.points)){
+					for(let j = 1; j < a.points.length; j++){
+						if(gPSD(mx,my,a.points[j-1].x,a.points[j-1].y,a.points[j].x,a.points[j].y) < T) return a;
+					}
+				}
+			}
+			return null;
+		}
+
+		if(gCanvas && gTip){
+			gCanvas.addEventListener('mousemove', function(e){
+				const rect = gCanvas.getBoundingClientRect();
+				const mx = e.clientX-rect.left, my = e.clientY-rect.top;
+				const hit = gHitTest(mx,my);
+				if(hit){
+					gCanvas.style.cursor = 'crosshair';
+					gTip.innerHTML = '<strong>'+hit.label+'</strong><br>'+hit.lines.join('<br>');
+					gTip.style.display = 'block';
+					const tw = gTip.offsetWidth, th = gTip.offsetHeight;
+					const cw = rect.width, ch = rect.height;
+					let tx = mx+14, ty = my+14;
+					if(tx+tw > cw-4) tx = mx-tw-14;
+					if(ty+th > ch-4) ty = my-th-14;
+					if(ty < 0) ty = 4;
+					gTip.style.left = tx+'px'; gTip.style.top = ty+'px';
+				} else {
+					gCanvas.style.cursor = ''; gTip.style.display = 'none';
+				}
+			});
+			gCanvas.addEventListener('mouseleave', function(){
+				gTip.style.display = 'none'; gCanvas.style.cursor = '';
+			});
+			if(window.ResizeObserver) new ResizeObserver(function(){ if(gLastParams) gDraw(gLastParams); }).observe(gCanvas);
+		}
 
 		// initial update
 		updateLOS();
